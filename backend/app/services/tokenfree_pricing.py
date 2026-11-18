@@ -845,7 +845,10 @@ async def ensure_official_rates(settings: Settings | None = None) -> dict[str, O
 
     Seedance 始终用 TF Ark 渠道导出的 billing_expr 覆盖，避免公开价目漂移。
     """
-    if getattr(settings or get_settings(), "local_media_mock", False):
+    config = settings or get_settings()
+    if getattr(config, "direct_models_enabled", False):
+        return {}
+    if getattr(config, "local_media_mock", False):
         return merge_seedance_tf_rates(cached_rates())
     ttl = _FAIL_TTL_SEC if _cache_failed else _CACHE_TTL_SEC
     if _cache is not None and _cache_at and (time.monotonic() - _cache_at) < ttl:

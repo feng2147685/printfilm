@@ -3,7 +3,9 @@ from .runtime import pin_route
 
 
 async def priced_catalog(db, catalog: dict) -> dict:
+    """按实际渠道、策略和价格组装前台可选模型与分辨率。"""
     from app.config import get_settings
+    from app.services.direct_models import DIRECT_MINIMAX, H3_RESOLUTION
     from app.services.model_availability import is_model_enabled
     from app.services.model_settings import get_routing_snapshot
     models = get_routing_snapshot().logical_models
@@ -26,7 +28,9 @@ async def priced_catalog(db, catalog: dict) -> dict:
             row["price_version"] = catalog["price_version"]
             row["available_resolutions"] = [x for x in strategy.resolutions if x in prices] if book else list(strategy.resolutions)
             try:
-                pin_route(strategy.capability, row["id"])
+                route = pin_route(strategy.capability, row["id"])
+                if route["channel_id"] == DIRECT_MINIMAX:
+                    row["available_resolutions"] = [value for value in row["available_resolutions"] if value == H3_RESOLUTION]
                 row["available"] = bool(row["available_resolutions"])
             except ValueError:
                 row["available"] = False

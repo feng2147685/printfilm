@@ -68,6 +68,7 @@ from app.services.tokenfree_video import (
 )
 from app.services import storage
 from app.services import local_media_mock
+from app.services.direct_models import DIRECT_MINIMAX, DIRECT_SEEDREAM, h3_query, h3_submit, seedream_body
 from app.services.media_models.runtime import (
     current_snapshot, current_operation, execution_params, operation_for, restore_route, stamp_usage,
 )
@@ -560,6 +561,9 @@ class ArkGateway:
 
     @property
     def mock(self) -> bool:
+        """直连模式明确返回真实失败，避免缺少某一路凭据时误用模拟结果。"""
+        if getattr(self.settings, "direct_models_enabled", False):
+            return False
         if getattr(self.settings, "local_media_mock", False):
             return False  # Media has its own branches; storyboard/expansion must use real LLM.
         return self.settings.ark_mock or not self._ark_api_key()
@@ -599,10 +603,13 @@ class ArkGateway:
         return route
 
     def _poll_route(self) -> ResolvedModelRoute | None:
+        """从任务快照恢复渠道，交互式直连查询使用当前 H3 路由。"""
         operation = operation_for("video") if current_snapshot.get() else None
         if operation:
             current_operation.set(operation)
             return restore_route(operation["route"])
+        if getattr(self.settings, "direct_models_enabled", False):
+            return self._resolve_ark_route("video", None)
         return None
 
     def _route_headers(self, route: ResolvedModelRoute | None = None) -> dict[str, str]:
@@ -651,8 +658,11 @@ class ArkGateway:
         return result
 
     async def _request_media(self, client: Any, method: str, endpoint: str, **kwargs: Any) -> Any:
+        """沿用上游请求记录，生图直连按火山方舟渠道归档。"""
         if getattr(self.settings, "local_media_mock", False) and not _force_real_image.get():
             return await local_media_mock.simulate_http_request(method, endpoint, **kwargs)
+        if urlparse(endpoint).hostname == "ark.cn-beijing.volces.com":
+            kwargs["provider"] = "volcengine"
         return await observed_request(client, method, endpoint, **kwargs)
 
     async def download_result_media(self, url: str, dest: Path) -> None:
@@ -1060,7 +1070,10 @@ class ArkGateway:
         )
 
         # 2.5 的渠道是 image-generation，走 /responses 会报 default 分组无 distributor
-        if is_gpt_image_25(chosen):
+        if route and route.channel_id == DIRECT_SEEDREAM:
+            path = "/images/generations"
+            body = await seedream_body(route, full_prompt, normalized["resolution"], aspect_ratio, subject_refs + style_refs)
+        elif is_gpt_image_25(chosen):
             path = "/images/generations"
             body = build_tokenfree_openai_image_body(
                 model=chosen,
@@ -1103,7 +1116,7 @@ class ArkGateway:
                         resp.status_code,
                         resp.text,
                         model=chosen,
-                        tokenfree=True,
+                        tokenfree=not route or route.channel_id != DIRECT_SEEDREAM,
                     )
                 data = resp.json()
         except httpx.TimeoutException as exc:
@@ -1322,6 +1335,7 @@ class ArkGateway:
         extra_image_urls: list[str] | None = None,
         model: str | None = None,
     ) -> str:
+        """提交单镜图生视频，按渠道选择官方 H3 或原有媒体协议。"""
         strategy, normalized, pinned_route = execution_params("video", {
             "duration": duration, "resolution": resolution, "aspect_ratio": ratio or "9:16",
             "generate_audio": generate_audio,
@@ -1335,6 +1349,13 @@ class ArkGateway:
         if self.mock:
             digest = hashlib.md5(f"{image_url}:{prompt}".encode()).hexdigest()[:10]
             return f"mock-task-{digest}"
+        route = pinned_route or self._resolve_ark_route("video", model or strategy.model_id)
+        if route and route.channel_id == DIRECT_MINIMAX:
+            refs = list(dict.fromkeys([image_url, *(extra_image_urls or [])]))
+            role = "first_frame" if len(refs) == 1 else "reference_image"
+            content = [{"type": "text", "text": prompt.strip() or "画面轻微动态，保持主体稳定"}]
+            content.extend({"type": "image_url", "image_url": {"url": url}, "role": role} for url in refs)
+            return await h3_submit(route, {"content": content, "duration": duration, "resolution": resolution, "ratio": ratio})
 
         # Seedance 拒绝对角外宽高比（实测 2.5006→报 2.50）；提交前垫黑边钳到安全区间
         from app.services.seedance_image_aspect import ensure_seedance_compatible_image_url
@@ -1342,7 +1363,6 @@ class ArkGateway:
         safe_image_url = await ensure_seedance_compatible_image_url(image_url)
         # Seedance needs a publicly reachable https image (data URI often rejected / odd errors)
         image_ref = await self._resolve_image_ref(safe_image_url, prefer_https=True)
-        route = pinned_route or self._resolve_ark_route("video", model or strategy.model_id)
         from app.services.tokenfree_pricing import canonicalize_channel_model_id
 
         video_model = canonicalize_channel_model_id(
@@ -1535,6 +1555,8 @@ class ArkGateway:
         existing = await existing_provider_task()
         if existing:
             return existing
+        if route and route.channel_id == DIRECT_MINIMAX:
+            return await h3_submit(route, body)
         if self.mock:
             digest = hashlib.md5(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[
                 :10
@@ -1648,6 +1670,7 @@ class ArkGateway:
             raise
 
     async def poll_task(self, task_id: str) -> TaskResult:
+        """轮询旧渠道或直连任务，直到完成或达到站点等待上限。"""
         if getattr(self.settings, "local_media_mock", False) or task_id.startswith(local_media_mock.VIDEO_PREFIX):
             return self._local_media_result(task_id)
         if self.mock or task_id.startswith("mock-task-"):
@@ -1658,6 +1681,14 @@ class ArkGateway:
             )
 
         deadline = time.monotonic() + self.settings.ark_video_poll_timeout
+        route = self._poll_route()
+        if route and route.channel_id == DIRECT_MINIMAX:
+            while time.monotonic() < deadline:
+                result = await self.fetch_task_once(task_id)
+                if result.status in {"succeeded", "failed"}:
+                    return result
+                await asyncio.sleep(self.settings.ark_video_poll_interval)
+            return TaskResult(status="failed", error="MiniMax H3 查询超时", provider_task_id=task_id)
         async with httpx.AsyncClient(timeout=_upstream_timeout(VIDEO_POLL_READ_SEC, connect=15.0)) as client:
             while time.monotonic() < deadline:
                 try:
@@ -1720,6 +1751,9 @@ class ArkGateway:
                 last_frame_url=f"/static/mock/last_{task_id[-8:]}.jpg",
             )
         try:
+            route = self._poll_route()
+            if route and route.channel_id == DIRECT_MINIMAX:
+                return TaskResult(**await h3_query(route, task_id), provider_task_id=task_id)
             async with httpx.AsyncClient(timeout=_upstream_timeout(VIDEO_FETCH_READ_SEC, connect=15.0)) as client:
                 resp = await observed_request(client, "GET",
                     self._route_url(f"/contents/generations/tasks/{task_id}", self._poll_route()),
@@ -1829,7 +1863,7 @@ class ArkGateway:
         model: str | None = None,
         extra_image_urls: list[str] | None = None,
     ) -> tuple[str, TaskResult]:
-        """Create i2v task and wait；开源版只走 TokenFree（不直连 Kie / 火山）。"""
+        """提交图生视频并等待本地文件，恢复时复用已记录的上游任务。"""
         if current_snapshot.get():
             current_operation.set(operation_for("video", shot_no=shot_no, model=model))
         last_err: Exception | None = None

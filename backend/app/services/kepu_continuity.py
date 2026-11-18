@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from app.config import get_settings
 from app.services.style_lock import seedream_ref_urls
 
 
@@ -75,6 +76,12 @@ def _any_shot_image(shot: Any) -> str | None:
 
 def video_image_ref(shot: Any) -> str:
     """本镜图生视频首图优先公网/本地落盘图，跳过需要上游鉴权的产物 URL。"""
+    if get_settings().direct_models_enabled:
+        from app.services.direct_models import local_reference_path
+
+        local = str(getattr(shot, "image_url", None) or "")
+        if local_reference_path(local):
+            return local
     for raw in (getattr(shot, "image_url", None), getattr(shot, "image_ark_url", None)):
         if url := _usable_seedream_url(raw):
             return url
@@ -107,6 +114,12 @@ def _usable_video_ref(raw: str | None) -> str | None:
 def image_refs_for_shot(prev: Any | None, base_refs: list[str] | None = None) -> list[str]:
     """本镜 Seedream 参考：上一镜静帧 + 模板底图。"""
     bases = list(base_refs or [])
+    if get_settings().direct_models_enabled:
+        from app.services.direct_models import local_reference_path
+
+        local = str(getattr(prev, "image_url", None) or "")
+        previous = local if local_reference_path(local) else shot_image_ref(prev)
+        return list(dict.fromkeys(([previous] if previous else []) + bases))[:2]
     prev_url = shot_image_ref(prev)
     if prev_url:
         return seedream_ref_urls(prev_url, *bases)

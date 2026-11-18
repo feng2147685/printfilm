@@ -71,7 +71,12 @@ def project_image_references(project: Any) -> tuple[list[str], list[str]]:
     mocked = bool(settings.ark_mock or settings.local_media_mock)
 
     def resolve(url: str) -> str | None:
-        """离线模拟不上传；真实任务仅传公网图。"""
+        """方舟直连由请求层内联本机图片，聚合渠道仍使用公网图。"""
+        if settings.direct_models_enabled:
+            from app.services.direct_models import local_reference_path
+
+            if local_reference_path(url):
+                return url
         if mocked and url.startswith("/static/") and ".." not in url.split("/"):
             return url
         return public_image_reference(url)

@@ -564,6 +564,18 @@ async def _compose_runtime_state(db: AsyncSession) -> tuple[list[SystemModelChan
 
 async def load_model_settings_cache(db: AsyncSession) -> None:
     """加载路由快照；若与渠道不同步则回写 healed 配置，避免默认仍钉死旧模型名。"""
+    if get_settings().direct_models_enabled:
+        from app.services.direct_models import H3_RESOLUTION, direct_routing
+
+        channels, logical_models, defaults = direct_routing(get_settings())
+        _refresh_routing_snapshot(channels, logical_models, defaults)
+        # 直连配置只作用于进程，不回写或套用聚合渠道的密钥和地址。
+        _refresh_overlay({"flat": {
+            "model_llm": defaults.text_model, "model_image": defaults.image_model,
+            "model_video": defaults.video_model, "ark_video_resolution": H3_RESOLUTION,
+        }})
+        reload_settings()
+        return
     channels, logical_models, default_models, flat, app_row = await _compose_runtime_state(db)
     config = dict(app_row.config_json or {})
     old_ids = {(item or {}).get("id") for item in (config.get("logical_models") or [])}
@@ -637,6 +649,13 @@ def _to_admin_flat_out(flat: dict[str, Any], *, source: str, updated_at, channel
 
 
 async def get_admin_model_settings(db: AsyncSession) -> AdminModelSettingsOut:
+    """读取管理端状态，直连模式展示本机配置的各渠道就绪情况。"""
+    if get_settings().direct_models_enabled:
+        snapshot = get_routing_snapshot()
+        return _to_admin_flat_out(
+            _settings_to_dict(), source="env", updated_at=None, channels=snapshot.channels,
+            logical_models=snapshot.logical_models, defaults=snapshot.default_models,
+        )
     channels, logical_models, defaults, flat, app_row = await _compose_runtime_state(db)
     admin_channels = await _load_channels(db, runtime=False)
     source = "db" if app_row.config_json else "env"
@@ -644,6 +663,14 @@ async def get_admin_model_settings(db: AsyncSession) -> AdminModelSettingsOut:
 
 
 async def get_admin_routing_settings(db: AsyncSession) -> AdminRoutingSettingsOut:
+    """返回可显示的路由配置，运行时密钥只公开配置状态。"""
+    if get_settings().direct_models_enabled:
+        snapshot = get_routing_snapshot()
+        return AdminRoutingSettingsOut(
+            system_channels=[channel.model_copy(update={"api_key": ""}) for channel in snapshot.channels],
+            logical_models=snapshot.logical_models, default_models=snapshot.default_models,
+            validation_errors=[f"{channel.name} 未配置 API Key" for channel in snapshot.channels if not channel.has_api_key],
+        )
     from app.services.tokenfree_gateway import TOKENFREE_CHANNEL_ID
     from app.services.media_models.reference_limits import reference_limit_settings
 

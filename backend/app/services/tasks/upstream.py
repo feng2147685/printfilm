@@ -88,7 +88,9 @@ def _append_to_caller_session(db: Any, task_id: int, event_type: str, payload: d
 def _video_request(method: str, endpoint: str) -> tuple[bool, bool, str | None]:
     """识别视频建单与轮询路径，只对异步视频响应回填 provider ID。"""
     path = urlsplit(endpoint).path.rstrip("/")
-    for suffix in ("/videos", "/contents/generations/tasks"):
+    if method == "GET" and "/v2/query/video_generation/" in path:
+        return False, True, unquote(path.rsplit("/", 1)[-1])
+    for suffix in ("/videos", "/contents/generations/tasks", "/v2/video_generation"):
         if path.endswith(suffix):
             return method == "POST", False, None
         marker = f"{suffix}/"
@@ -215,6 +217,8 @@ async def observed_request(
         data = _response_body(response)
         code = int(response.status_code)
         unwrapped = unwrap_video_task_payload(data) if isinstance(data, dict) else {}
+        if provider == "minimax" and is_poll and isinstance(data, dict) and isinstance(data.get("task"), dict):
+            unwrapped = data["task"]
         state = str(unwrapped.get("status") or "").lower()
         error = unwrapped.get("error")
         failed = code >= 400 or bool(error) or state in {"failed", "error", "cancelled"}

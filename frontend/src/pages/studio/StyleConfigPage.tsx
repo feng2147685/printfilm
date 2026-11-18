@@ -76,6 +76,15 @@ export default function StyleConfigPage() {
   }, [mediaCatalog, imageModel, videoModel])
 
   useEffect(() => {
+    // 切换渠道或模型后，历史清晰度可能已不可用，改用当前模型允许的档位。
+    const model = mediaCatalog?.video_models.find(item => item.id === videoModel)
+    const resolutions = model?.available_resolutions ?? model?.allowed_resolutions
+    if (resolutions?.length) {
+      setVideoResolution(previous => resolutions.includes(previous) ? previous : resolutions[0])
+    }
+  }, [mediaCatalog, videoModel, videoResolution])
+
+  useEffect(() => {
     if (!localStorage.getItem('token')) {
       nav('/auth')
       return

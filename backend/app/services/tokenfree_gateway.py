@@ -24,7 +24,12 @@ def tokenfree_site_origin(base_url: str | None = None) -> str:
 
 
 def resolve_tokenfree_api_key() -> str:
-    """优先渠道 Key，其次运行时 overlay / 环境变量。"""
+    """聚合模式优先渠道 Key，官方直连时不使用聚合凭据。"""
+    from app.config import get_settings
+
+    s = get_settings()
+    if getattr(s, "direct_models_enabled", False):
+        return ""
     try:
         from app.services.model_settings import get_routing_snapshot
 
@@ -34,9 +39,6 @@ def resolve_tokenfree_api_key() -> str:
     for channel in channels:
         if channel.id == TOKENFREE_CHANNEL_ID and (channel.api_key or "").strip():
             return (channel.api_key or "").strip()
-    from app.config import get_settings
-
-    s = get_settings()
     return (s.openai_api_key or s.ark_api_key or "").strip()
 
 

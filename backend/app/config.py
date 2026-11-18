@@ -46,6 +46,14 @@ class Settings(BaseSettings):
 
     ark_api_key: str = ""
     ark_base_url: str = "https://www.tokenfree.com/v1"
+    # 本地直连模式按能力使用独立凭据，避免渠道间混用密钥。
+    direct_models_enabled: bool = False
+    direct_deepseek_api_key: str = ""
+    direct_seedream_api_key: str = ""
+    # 火山方舟可授予标准模型 ID 或指定推理接入点的调用权限。
+    direct_seedream_model: str = "doubao-seedream-5-0-pro-260628"
+    direct_minimax_api_key: str = ""
+    direct_minimax_region: Literal["cn", "global"] = "cn"
     # 文字模型：开源版固定 TokenFree New API，后台选模型
     openai_api_key: str = ""
     openai_base_url: str = "https://www.tokenfree.com/v1"

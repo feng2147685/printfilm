@@ -35,6 +35,11 @@ def allowed_video_resolutions(model_id: str | None) -> list[str]:
         return list(SAFE_VIDEO_RESOLUTIONS)
 
     from app.services.media_model_presets import model_generation_options
+    from app.config import get_settings
+    from app.services.direct_models import H3_RESOLUTION
+
+    if get_settings().direct_models_enabled and mid.replace("-", "") == "minimaxh3":
+        return [H3_RESOLUTION]
 
     opts = model_generation_options(model_id)
     raw = opts.get("allowed_resolutions") if isinstance(opts, dict) else None

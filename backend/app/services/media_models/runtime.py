@@ -25,6 +25,7 @@ def _public_route(route: dict) -> dict:
 
 
 def pin_route(capability: str, model_id: str) -> dict:
+    """冻结任务使用的渠道与模型，凭据在执行时通过渠道读取。"""
     settings = get_settings()
     snapshot = get_routing_snapshot()
     models = getattr(snapshot, "logical_models", [])
@@ -36,12 +37,15 @@ def pin_route(capability: str, model_id: str) -> dict:
     if route is None and logical is None and model_id != strategy.model_id:
         route = resolve_logical_model(capability, strategy.model_id)
     if route:
-        if get_strategy(route.upstream_model).model_id != strategy.model_id:
+        from app.services.direct_models import DIRECT_SEEDREAM
+
+        # 方舟自定义接入点没有可推断的型号，沿用直连 Seedream 逻辑模型能力。
+        if route.channel_id != DIRECT_SEEDREAM and get_strategy(route.upstream_model).model_id != strategy.model_id:
             raise ValueError("route: 上游绑定与所选模型策略不匹配")
         return _public_route(route.model_dump(exclude={"api_key"}))
     if is_managed_model(capability, model_id, models):
         raise ValueError(f"route: {model_id} 没有启用的可用渠道绑定")
-    if snapshot.channels and not (settings.ark_mock or settings.local_media_mock):
+    if settings.direct_models_enabled or (snapshot.channels and not (settings.ark_mock or settings.local_media_mock)):
         raise ValueError(f"route: {model_id} 没有可用渠道，不会自动切换模型")
     return _public_route({"capability": capability, "logical_model_id": model_id,
             "upstream_model": resolve_strategy(model_id).model_id,

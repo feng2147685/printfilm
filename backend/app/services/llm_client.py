@@ -132,6 +132,7 @@ async def chat_completions(
     model_id: str | None = None,
     strict_output: bool = False,
 ) -> str:
+    """请求渠道文字模型，直连 DeepSeek 的记录在任务中心单独归属。"""
     url, headers, payload = prepare_chat_request(
         system, user, temperature=temperature, max_tokens=max_tokens,
         response_format=response_format, model_id=model_id,
@@ -148,6 +149,7 @@ async def chat_completions(
     async with httpx.AsyncClient(timeout=timeout) as client:
         res = await observed_request(client, "POST",
             url,
+            **({"provider": "deepseek"} if base == "https://api.deepseek.com" else {}),
             headers=headers,
             json=payload,
         )
